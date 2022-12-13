@@ -2,7 +2,6 @@ package com.example.arsudokusolver;
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.Color;
 import android.util.Log;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -10,8 +9,7 @@ import android.widget.TextView;
 
 import androidx.annotation.NonNull;
 
-import com.example.arsudokusolver.ml.HandwrittenDigits;
-import com.example.arsudokusolver.ml.OcrModel;
+import com.example.arsudokusolver.ml.Mnist;
 
 import org.opencv.android.Utils;
 import org.opencv.core.Core;
@@ -40,7 +38,7 @@ public class SudokuDNS {
     private static final int HEIGHT = 630;
     private static final int WIDTH = 630;
     private static final int CONTOUR_SIZE = 1;
-    private static final int INPUT_SIZE = 224;
+    private static final int INPUT_SIZE = 28;
 
 
     public static Bitmap solve(Context context, LinearLayout linearLayout, Bitmap image) {
@@ -48,18 +46,22 @@ public class SudokuDNS {
         Mat img = bitmapToMat(image);
 
         //Gray Scale Image
-        Mat gray = getMatCopy(img);
+        Mat gray = img.clone();
         Imgproc.cvtColor(gray, gray, Imgproc.COLOR_BGR2GRAY);
 
         //Blurring the Gray Image.
         Mat blur = new Mat();
         Imgproc.GaussianBlur(gray, blur, new Size(9, 9), 500);
 
+
         //Adaptive Thresholding
         Mat thresh = new Mat();
         Imgproc.adaptiveThreshold(blur, thresh, 255,
                 Imgproc.ADAPTIVE_THRESH_MEAN_C, Imgproc.THRESH_BINARY_INV, 21, 10);
+
+        //Resizing Gray and Thresh images
         Imgproc.resize(thresh, thresh, new Size(WIDTH, HEIGHT));
+        Imgproc.resize(gray, gray, new Size(WIDTH, HEIGHT));
 
 
         //Finding the Contours of the thresh image.
@@ -71,11 +73,10 @@ public class SudokuDNS {
         Collections.sort(contours, (o1, o2) -> (int) (Imgproc.contourArea(o2) - Imgproc.contourArea(o1)));
 
         //Taking only largest 20 contours
-        contours = getTopContours(contours, CONTOUR_SIZE);
+        contours = getTopContours(contours);
 
         //Applying contours to temp image
-        Mat cnt_img = getMatCopy(img);
-
+        Mat cnt_img = img.clone();
 
         //Traversing the Contours for Sudoku Detection
         for (MatOfPoint cnt : contours) {
@@ -96,22 +97,25 @@ public class SudokuDNS {
                 Point[] sortedPoints = getSortedPoints(cnt);
 
                 //Getting the Warped Perspective Image.
-                Mat warp_thresh_img = warpPerspective(thresh, sortedPoints);
+                Mat warp_thresh_img = warpPerspective(thresh.clone(), sortedPoints);
 
                 //Getting vertical and horizontal Lines.
-//                Mat vhLines = getVHLines(img);
+                Mat vhLines = getVHLines(warp_thresh_img);
+
+                //
+                Imgproc.cvtColor(vhLines, vhLines, Imgproc.COLOR_BGR2GRAY);
+
+                Mat diff = new Mat();
+                Core.subtract(warp_thresh_img, vhLines, diff);
 
 
-                List<Bitmap> listOfSubMats = getListOfSubMats(warp_thresh_img, img);
+                List<Bitmap> listOfSubMats = getListOfSubMats(diff);
                 try {
-                    OcrModel model = OcrModel.newInstance(context);
-
-                    HandwrittenDigits model2 = HandwrittenDigits.newInstance(context);
-
-
+                    Mnist model = Mnist.newInstance(context);
                     for (Bitmap subMat : listOfSubMats) {
                         Bitmap bmp = Bitmap.createScaledBitmap(subMat, INPUT_SIZE, INPUT_SIZE, false);
-                        int predictedNumber = classifyImage(model2, bmp);
+                        int predictedNumber;
+                        predictedNumber = classifyImage(model, bmp);
 
                         LinearLayout linearLayout1 = new LinearLayout(context);
                         linearLayout1.setOrientation(LinearLayout.HORIZONTAL);
@@ -128,159 +132,89 @@ public class SudokuDNS {
 
                         linearLayout.addView(linearLayout1);
                     }
-                    // Releases model resources if no longer used.
                     model.close();
-                    model2.close();
                 } catch (IOException e) {
                     // TODO Handle the exception
                 }
 
-                return matToBitmap(warp_thresh_img);
+                return matToBitmap(diff);
             }
         }
         return matToBitmap(cnt_img);
     }
 
-    private static int classifyImage(HandwrittenDigits model, Bitmap bmp) {
+    private static Mat getVHLines(Mat mat) {
+        List<MatOfPoint> contours = new ArrayList<>();
+        Mat hierarchy = new Mat();
+        Imgproc.findContours(mat, contours, hierarchy, Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_NONE);
+
+        int cropFactor = 10;
+        int factor = 60;
+        int lineWidth = 13;
+        Mat cnt_img = Mat.zeros(mat.rows(), mat.cols(), CvType.CV_8UC3);
+        for (MatOfPoint c :
+                contours) {
+            Rect rect = Imgproc.boundingRect(c);
+            if (Math.abs(rect.height - rect.width) < cropFactor
+                    && rect.height >= factor && rect.width >= factor
+                    && rect.height < HEIGHT / 3 && rect.width < WIDTH / 3) {
+
+                List<MatOfPoint> temp = new ArrayList<>();
+                temp.add(c);
+                Imgproc.drawContours(cnt_img, temp, -1, new Scalar(255, 255, 255, 255),
+                        lineWidth, Imgproc.LINE_8);
+            }
+        }
+        int border = 10;
+        Imgproc.rectangle(cnt_img, new Point(1, 1), new Point(cnt_img.width(), cnt_img.height()), new Scalar(255, 255, 255, 255), border);
+        return cnt_img;
+    }
+
+    private static int classifyImage(Mnist model, Bitmap bmp) {
+        bmp = Bitmap.createScaledBitmap(bmp, 28, 28, false);
         // Creates inputs for reference.
         TensorBuffer inputFeature0 = TensorBuffer.createFixedSize(new int[]{1, 28, 28}, DataType.FLOAT32);
-        ByteBuffer byteBuffer = getByteBuffer(bmp);
-        inputFeature0.loadBuffer(byteBuffer);
+        inputFeature0.loadBuffer(getByteBuffer(bmp));
 
         // Runs model inference and gets result.
-        HandwrittenDigits.Outputs outputs = model.process(inputFeature0);
+        Mnist.Outputs outputs = model.process(inputFeature0);
         TensorBuffer outputFeature0 = outputs.getOutputFeature0AsTensorBuffer();
 
-        //Confidence
         float[] confidence = outputFeature0.getFloatArray();
         int index = 0;
-        for (int i = 0; i < confidence.length; i++) {
+        for (int i = 1; i < confidence.length; i++) {
             if (confidence[index] < confidence[i]) {
                 index = i;
             }
         }
-        return index;
-    }
-
-    private static Mat getVHLines(Mat mat) {
-        Mat flooded = new Mat();
-        Point flood = new Point(1, 1);
-        Scalar lowerDiff = new Scalar(10, 10, 10);
-        Scalar upperDiff = new Scalar(10, 10, 10);
-        Imgproc.floodFill(mat, flooded, flood, new Scalar(255, 255, 255), new Rect(), lowerDiff, upperDiff, 4);
-        return flooded;
-
-        //Contours
-        //Finding the Contours of the thresh image.
-
-//        List<MatOfPoint> contours = new ArrayList<>();
-//        Mat hierarchy = new Mat();
-//        Imgproc.findContours(mat, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
-//        Log.d("MYAPP", String.valueOf(contours.size()));
-////        Collections.sort(contours, (o1, o2) -> (int) (Imgproc.contourArea(o2) - Imgproc.contourArea(o1)));
-//
-////        contours = getTopContours(contours, 90);
-//
-//        Mat cnt_img = mat.clone();
-//
-//        Imgproc.drawContours(cnt_img, contours, -1, new Scalar(0, 255, 0, 255),
-//                10, Imgproc.LINE_8);
-//
-//        return mat;
-
-//
-//                if (contours.size() == 1) {
-//                    //Black screen zero to be predicted
-//                    Mat cnt_img = Mat.zeros(new Size(crp.rows(), crp.width()), CvType.CV_8UC3);
-//                    listOfSubMats.add(matToBitmap(cnt_img));
-//                } else {
-////                Sorting the Contours based on Contour area
-//                    Collections.sort(contours, (o1, o2) -> (int) (Imgproc.contourArea(o2) - Imgproc.contourArea(o1)));
-//
-//                    Mat cnt_img = Mat.zeros(new Size(crp.rows(), crp.width()), CvType.CV_8UC3);
-//
-//                    List<MatOfPoint> temp = new ArrayList<>();
-//                    temp.add(contours.get(0));
-//                    Imgproc.drawContours(cnt_img, temp, -1, new Scalar(0, 255, 0, 255),
-//                            -1, Imgproc.LINE_8);
-//
-//                    listOfSubMats.add(matToBitmap(cnt_img));
-//                }
-
-//        Mat blur = new Mat();
-//        Imgproc.GaussianBlur(mat, blur, new Size(9, 9), 500);
-//
-//        Mat horizontalLines = new Mat();
-//        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(11, 1));
-//        Imgproc.erode(blur, horizontalLines, kernel);
-//
-//
-//        Mat verticalLines = new Mat();
-//        kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(1, 11));
-//        Imgproc.erode(blur, verticalLines, kernel);
-//
-//        Mat diff = new Mat();
-//        Core.subtract(blur, horizontalLines, diff);
-//        Core.subtract(diff, verticalLines, diff);
-//        return diff;
-    }
-
-    private static int classifyImage(OcrModel model, Bitmap bmp) {
-        // Creates inputs for reference.
-        TensorBuffer inputFeature0 = TensorBuffer.createFixedSize(new int[]{1, 224, 224, 3}, DataType.FLOAT32);
-
-        //Getting byteBuffer
-        ByteBuffer byteBuffer = getByteBuffer(bmp);
-        inputFeature0.loadBuffer(byteBuffer);
-
-        // Runs model inference and gets result.
-        OcrModel.Outputs outputs = model.process(inputFeature0);
-        TensorBuffer outputFeature0 = outputs.getOutputFeature0AsTensorBuffer();
-        //Confidence
-        float[] confidence = outputFeature0.getFloatArray();
-        int index = 0;
-        for (int i = 0; i < confidence.length; i++) {
-            if (confidence[index] < confidence[i]) {
-                index = i;
-            }
-        }
-        return index;
+        Log.d("MYAPP", Arrays.toString(confidence));
+        return confidence[index] < 0.5f ? 0 : index;
     }
 
     private static ByteBuffer getByteBuffer(Bitmap bitmap) {
-        bitmap = Bitmap.createScaledBitmap(bitmap, 28, 28, false);
-        int width = bitmap.getWidth();
-        int height = bitmap.getHeight();
-        ByteBuffer mImgData = ByteBuffer
-                .allocateDirect(4 * width * height);
-        mImgData.order(ByteOrder.nativeOrder());
-        int[] pixels = new int[width*height];
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
-        for (int pixel : pixels) {
-            float value = (float) Color.red(pixel);
-            mImgData.putFloat(value);
-        }
-        return mImgData;
+        ByteBuffer byteBuffer = ByteBuffer.allocateDirect(4 * 28 * 28);
+        byteBuffer.order(ByteOrder.nativeOrder());
 
-//        ByteBuffer byteBuffer = ByteBuffer.allocateDirect(4 * INPUT_SIZE * INPUT_SIZE * 3);
-//        byteBuffer.order(ByteOrder.nativeOrder());
-//
-//        int[] intValues = new int[INPUT_SIZE * INPUT_SIZE];
-//        bitmap.getPixels(intValues, 0, bitmap.getWidth(), 0, 0, bitmap.getWidth(), bitmap.getHeight());
-//        int pixel = 0;
-//        for (int i = 0; i < INPUT_SIZE; i++) {
-//            for (int j = 0; j < INPUT_SIZE; j++) {
-//                int val = intValues[pixel++];
-//                byteBuffer.putFloat(((val >> 16) & 0xFF) * (1.f / 255.f));
-//                byteBuffer.putFloat(((val >> 8) & 0xFF) * (1.f / 255.f));
-//                byteBuffer.putFloat((val & 0xFF) * (1.f / 255.f));
-//            }
-//        }
-//        return byteBuffer;
+        int[] intValues = new int[28 * 28];
+        bitmap.getPixels(intValues, 0, bitmap.getWidth(), 0, 0, bitmap.getWidth(), bitmap.getHeight());
+        int pixel = 0;
+        for (int i = 0; i < INPUT_SIZE; i++) {
+            for (int j = 0; j < INPUT_SIZE; j++) {
+
+                int p = intValues[pixel++];
+
+                int R = (p >> 16) & 0xff;
+                int G = (p >> 8) & 0xff;
+                int B = p & 0xff;
+                float normalized = (R + G + B) / 3.0f / 255.0f;
+                byteBuffer.putFloat(normalized);
+            }
+        }
+        return byteBuffer;
     }
 
     @NonNull
-    private static List<Bitmap> getListOfSubMats(Mat warp_thresh_img, Mat img) {
+    private static List<Bitmap> getListOfSubMats(Mat warp_thresh_img) {
         List<Bitmap> listOfSubMats = new ArrayList<>();
         for (int i = 0; i < 9; i++) {
             for (int j = 0; j < 9; j++) {
@@ -288,63 +222,10 @@ public class SudokuDNS {
                 int start_y = i * (HEIGHT / 9);
                 Mat sub = new Mat(warp_thresh_img, new Rect(start_x, start_y, WIDTH / 9, HEIGHT / 9));
 
-                int cropFactor = 7;
-                //Get ROI
-                Mat crp = sub.submat(new Rect(cropFactor, cropFactor, sub.width() - cropFactor, sub.height() - cropFactor));
-
+                int cropFactor = 3;
+                Mat crp = sub.submat(new Rect(cropFactor, cropFactor, sub.width() - 2 * cropFactor, sub.height() - 2 * cropFactor));
                 Imgproc.resize(crp, crp, new Size(INPUT_SIZE, INPUT_SIZE));
-                //Contours
-                List<MatOfPoint> contours = new ArrayList<>();
-                Mat hierarchy = new Mat();
-                Imgproc.findContours(crp, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
-
-                Mat mat = Mat.zeros(new Size(crp.rows(), crp.width()), CvType.CV_8UC3);
-                for (MatOfPoint c :
-                        contours) {
-                    Rect rect = Imgproc.boundingRect(c);
-                    if (rect.x < cropFactor || rect.y < cropFactor || rect.height < cropFactor || rect.width < cropFactor) {
-                    } else {
-                        mat = new Mat(crp, rect);
-                        break;
-                    }
-                }
-                Mat inv = new Mat();
-                Core.bitwise_not(mat, inv);
-                listOfSubMats.add(matToBitmap(inv));
-
-
-                //Finding the Contours of the thresh image.
-
-//                List<MatOfPoint> contours = new ArrayList<>();
-//                Mat hierarchy = new Mat();
-//                Imgproc.findContours(crp, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
-//                Log.d("MYAPP", i + " : " + j + " = " + contours.size());
-//
-//                if (contours.size() == 1) {
-//                    //Black screen zero to be predicted
-//                    Mat cnt_img = Mat.zeros(new Size(crp.rows(), crp.width()), CvType.CV_8UC3);
-//                    listOfSubMats.add(matToBitmap(cnt_img));
-//                } else {
-////                Sorting the Contours based on Contour area
-//                    Collections.sort(contours, (o1, o2) -> (int) (Imgproc.contourArea(o2) - Imgproc.contourArea(o1)));
-//
-//                    Mat cnt_img = Mat.zeros(new Size(crp.rows(), crp.width()), CvType.CV_8UC3);
-//
-//                    List<MatOfPoint> temp = new ArrayList<>();
-//                    temp.add(contours.get(0));
-//                    Imgproc.drawContours(cnt_img, temp, -1, new Scalar(0, 255, 0, 255),
-//                            -1, Imgproc.LINE_8);
-//
-//                    listOfSubMats.add(matToBitmap(cnt_img));
-//                }
-
-
-//                Mat inv = new Mat();
-//                Core.bitwise_not(sub, inv);
-//                Bitmap bmp = matToBitmap(inv);
-//
-//
-//                listOfSubMats.add(bmp);
+                listOfSubMats.add(matToBitmap(crp));
             }
         }
         return listOfSubMats;
@@ -404,9 +285,9 @@ public class SudokuDNS {
     }
 
     @NonNull
-    private static List<MatOfPoint> getTopContours(List<MatOfPoint> contours, int top_number) {
+    private static List<MatOfPoint> getTopContours(List<MatOfPoint> contours) {
         List<MatOfPoint> temp = new ArrayList<>();
-        for (int i = 0; i < Math.min(top_number, contours.size()); i++) {
+        for (int i = 0; i < Math.min(SudokuDNS.CONTOUR_SIZE, contours.size()); i++) {
             temp.add(contours.get(i));
         }
         contours = temp;
@@ -425,9 +306,4 @@ public class SudokuDNS {
         Utils.bitmapToMat(bmp, mat);
         return mat;
     }
-
-    private static Mat getMatCopy(Mat mat) {
-        return mat.clone();
-    }
-
 }
