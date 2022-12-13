@@ -1,0 +1,1 @@
+C:\Users\chanp\AndroidStudioProjects\ARSudokuSolver\OpenCV\build\intermediates\cxx\Debug\14345m2g\obj\x86

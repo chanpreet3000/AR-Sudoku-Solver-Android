@@ -1,0 +1,1 @@
+C:\Users\chanp\AndroidStudioProjects\ARSudokuSolver\OpenCV\build\intermediates\cxx\RelWithDebInfo\55425970\obj\x86
