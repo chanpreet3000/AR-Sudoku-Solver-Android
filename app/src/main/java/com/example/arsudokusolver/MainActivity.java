@@ -5,6 +5,7 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.Image;
 import android.os.Bundle;
 import android.provider.MediaStore;
@@ -54,10 +55,13 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "Please select an Image!", Toast.LENGTH_SHORT).show();
             } else {
                 Bitmap output = SudokuDNS.solve(getApplicationContext(), binding.linearLayout, bitmap);
-                Toast.makeText(this, "Solved!", Toast.LENGTH_SHORT).show();
                 binding.imageView.setImageBitmap(output);
             }
         });
+//        Bitmap bm = BitmapFactory.decodeResource(getResources(), R.drawable.photo2);
+//        binding.imageView.setImageBitmap(bm);
+//        Bitmap output = SudokuDNS2.solve(getApplicationContext(), binding.linearLayout, bm);
+//        binding.imageView.setImageBitmap(output);
     }
 
     @Override

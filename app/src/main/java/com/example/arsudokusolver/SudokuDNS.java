@@ -6,10 +6,11 @@ import android.util.Log;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 
-import com.example.arsudokusolver.ml.Mnist;
+import com.example.arsudokusolver.ml.OldModel;
 
 import org.opencv.android.Utils;
 import org.opencv.core.Core;
@@ -38,12 +39,15 @@ public class SudokuDNS {
     private static final int HEIGHT = 630;
     private static final int WIDTH = 630;
     private static final int CONTOUR_SIZE = 1;
-    private static final int INPUT_SIZE = 28;
+    private static final int INPUT_SIZE = 48;
 
 
     public static Bitmap solve(Context context, LinearLayout linearLayout, Bitmap image) {
+        linearLayout.removeAllViews();
+
         //Converting bitmap to image
         Mat img = bitmapToMat(image);
+        Imgproc.resize(img, img, new Size(WIDTH, HEIGHT));
 
         //Gray Scale Image
         Mat gray = img.clone();
@@ -51,7 +55,7 @@ public class SudokuDNS {
 
         //Blurring the Gray Image.
         Mat blur = new Mat();
-        Imgproc.GaussianBlur(gray, blur, new Size(9, 9), 500);
+        Imgproc.GaussianBlur(gray, blur, new Size(3, 3), 1);
 
 
         //Adaptive Thresholding
@@ -98,6 +102,7 @@ public class SudokuDNS {
 
                 //Getting the Warped Perspective Image.
                 Mat warp_thresh_img = warpPerspective(thresh.clone(), sortedPoints);
+                Mat warp_img = warpPerspective(blur.clone(), sortedPoints);
 
                 //Getting vertical and horizontal Lines.
                 Mat vhLines = getVHLines(warp_thresh_img);
@@ -109,13 +114,15 @@ public class SudokuDNS {
                 Core.subtract(warp_thresh_img, vhLines, diff);
 
 
-                List<Bitmap> listOfSubMats = getListOfSubMats(diff);
+                List<Bitmap> listOfSubMats = getListOfSubMats(warp_img);
                 try {
-                    Mnist model = Mnist.newInstance(context);
-                    for (Bitmap subMat : listOfSubMats) {
-                        Bitmap bmp = Bitmap.createScaledBitmap(subMat, INPUT_SIZE, INPUT_SIZE, false);
+                    List<Integer> listOfPredictedNumbers = new ArrayList<>();
+                    OldModel model = OldModel.newInstance(context);
+                    for (Bitmap bmp : listOfSubMats) {
+
                         int predictedNumber;
                         predictedNumber = classifyImage(model, bmp);
+                        listOfPredictedNumbers.add(predictedNumber);
 
                         LinearLayout linearLayout1 = new LinearLayout(context);
                         linearLayout1.setOrientation(LinearLayout.HORIZONTAL);
@@ -133,11 +140,48 @@ public class SudokuDNS {
                         linearLayout.addView(linearLayout1);
                     }
                     model.close();
+
+                    List<List<Integer>> predictedNumbers = new ArrayList<>();
+
+                    for (int i = 0; i < 9; i++) {
+                        List<Integer> temp1 = new ArrayList<>();
+                        for (int j = 0; j < 9; j++) {
+                            temp1.add(listOfPredictedNumbers.get(i * 9 + j));
+                        }
+                        predictedNumbers.add(temp1);
+                    }
+
+                    if (SudokuSolver.solve(predictedNumbers)) {
+                        Toast.makeText(context, "Solved!", Toast.LENGTH_SHORT).show();
+
+                        Mat dst = Mat.zeros(new Size(WIDTH, HEIGHT), CvType.CV_8UC3);
+                        Scalar color;
+                        int W = WIDTH / 9;
+                        int H = HEIGHT / 9;
+                        for (int i = 0; i < 9; i++) {
+                            for (int j = 0; j < 9; j++) {
+                                if (listOfPredictedNumbers.get(i * 9 + j) == 0) {
+                                    color = new Scalar(0, 255, 0, 255);
+                                } else {
+                                    color = new Scalar(255, 255, 255, 255);
+                                }
+                                Imgproc.putText(dst, predictedNumbers.get(i).get(j).toString(), new Point(j * W + W / 2.f - W / 4.f ,(i + 0.7) * H), Imgproc.FONT_HERSHEY_COMPLEX
+                                        , 1.8, color, 2, Imgproc.LINE_AA);
+                            }
+                        }
+
+//                      cv2.putText(img, str(numbers[(j*9)+i]), (i*W+int(W/2)-int((W/4)),
+//                     int((j+0.7)*H)), cv2.FONT_HERSHEY_COMPLEX, 2, color, 2, cv2.LINE_AA)
+                        return matToBitmap(dst);
+                    } else {
+                        Toast.makeText(context, "Error!", Toast.LENGTH_SHORT).show();
+                    }
+                    Log.d("MYAPP", predictedNumbers.toString());
                 } catch (IOException e) {
                     // TODO Handle the exception
                 }
 
-                return matToBitmap(diff);
+                return matToBitmap(warp_img);
             }
         }
         return matToBitmap(cnt_img);
@@ -170,14 +214,14 @@ public class SudokuDNS {
         return cnt_img;
     }
 
-    private static int classifyImage(Mnist model, Bitmap bmp) {
-        bmp = Bitmap.createScaledBitmap(bmp, 28, 28, false);
+    private static int classifyImage(OldModel model, Bitmap bmp) {
+        bmp = Bitmap.createScaledBitmap(bmp, INPUT_SIZE, INPUT_SIZE, false);
         // Creates inputs for reference.
-        TensorBuffer inputFeature0 = TensorBuffer.createFixedSize(new int[]{1, 28, 28}, DataType.FLOAT32);
+        TensorBuffer inputFeature0 = TensorBuffer.createFixedSize(new int[]{1, INPUT_SIZE, INPUT_SIZE}, DataType.FLOAT32);
         inputFeature0.loadBuffer(getByteBuffer(bmp));
 
         // Runs model inference and gets result.
-        Mnist.Outputs outputs = model.process(inputFeature0);
+        OldModel.Outputs outputs = model.process(inputFeature0);
         TensorBuffer outputFeature0 = outputs.getOutputFeature0AsTensorBuffer();
 
         float[] confidence = outputFeature0.getFloatArray();
@@ -188,19 +232,18 @@ public class SudokuDNS {
             }
         }
         Log.d("MYAPP", Arrays.toString(confidence));
-        return confidence[index] < 0.5f ? 0 : index;
+        return confidence[index] < 0.8f ? 0 : index;
     }
 
     private static ByteBuffer getByteBuffer(Bitmap bitmap) {
-        ByteBuffer byteBuffer = ByteBuffer.allocateDirect(4 * 28 * 28);
+        ByteBuffer byteBuffer = ByteBuffer.allocateDirect(4 * INPUT_SIZE * INPUT_SIZE);
         byteBuffer.order(ByteOrder.nativeOrder());
 
-        int[] intValues = new int[28 * 28];
+        int[] intValues = new int[INPUT_SIZE * INPUT_SIZE];
         bitmap.getPixels(intValues, 0, bitmap.getWidth(), 0, 0, bitmap.getWidth(), bitmap.getHeight());
         int pixel = 0;
         for (int i = 0; i < INPUT_SIZE; i++) {
             for (int j = 0; j < INPUT_SIZE; j++) {
-
                 int p = intValues[pixel++];
 
                 int R = (p >> 16) & 0xff;
@@ -225,6 +268,8 @@ public class SudokuDNS {
                 int cropFactor = 3;
                 Mat crp = sub.submat(new Rect(cropFactor, cropFactor, sub.width() - 2 * cropFactor, sub.height() - 2 * cropFactor));
                 Imgproc.resize(crp, crp, new Size(INPUT_SIZE, INPUT_SIZE));
+
+                //Inverse
                 listOfSubMats.add(matToBitmap(crp));
             }
         }
@@ -275,8 +320,6 @@ public class SudokuDNS {
                 new Point(0, HEIGHT - 1),
                 new Point(WIDTH - 1, HEIGHT - 1)
         );
-//        Use getPerspectiveTransform and wrapPerspective
-
         Mat warpMat = Imgproc.getPerspectiveTransform(src, dst);
         //This is you new image as Mat
         Mat destImage = new Mat();
