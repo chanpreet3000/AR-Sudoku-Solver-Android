@@ -2,19 +2,15 @@ package com.example.arsudokusolver;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.util.Log;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.TextView;
-import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 
 import com.example.arsudokusolver.ml.OldModel;
 
+import org.opencv.android.OpenCVLoader;
 import org.opencv.android.Utils;
-import org.opencv.core.Core;
-import org.opencv.core.CvType;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
 import org.opencv.core.MatOfPoint2f;
@@ -41,49 +37,53 @@ public class SudokuDNS {
     private static final int CONTOUR_SIZE = 1;
     private static final int INPUT_SIZE = 48;
 
+    public static Bitmap solve(Context context, Mat image) {
+        if (image == null) return null;
+        if (!OpenCVLoader.initDebug()) {
+            return null;
+        } else {
+            return solveHelper(context, image);
+        }
+    }
 
-    public static Bitmap solve(Context context, LinearLayout linearLayout, Bitmap image) {
-        linearLayout.removeAllViews();
+    public static Bitmap solve(Context context, Bitmap image) {
+        if (image == null) return null;
+        if (!OpenCVLoader.initDebug()) {
+            return null;
+        } else {
+            return solveHelper(context, bitmapToMat(image));
+        }
+    }
 
-        //Converting bitmap to image
-        Mat img = bitmapToMat(image);
+    private static Bitmap solveHelper(Context context, Mat image) {
+
+        //Image Cloning.
+        Mat img = image.clone();
+
+        //Resizing the image
         Imgproc.resize(img, img, new Size(WIDTH, HEIGHT));
 
         //Gray Scale Image
-        Mat gray = img.clone();
-        Imgproc.cvtColor(gray, gray, Imgproc.COLOR_BGR2GRAY);
+        Mat gray = new Mat();
+        Imgproc.cvtColor(img, gray, Imgproc.COLOR_BGR2GRAY);
 
-        //Blurring the Gray Image.
-        Mat blur = new Mat();
-        Imgproc.GaussianBlur(gray, blur, new Size(3, 3), 1);
-
+        Imgproc.GaussianBlur(gray, gray, new Size(3, 3), 3);
 
         //Adaptive Thresholding
         Mat thresh = new Mat();
-        Imgproc.adaptiveThreshold(blur, thresh, 255,
+        Imgproc.adaptiveThreshold(gray, thresh, 255,
                 Imgproc.ADAPTIVE_THRESH_MEAN_C, Imgproc.THRESH_BINARY_INV, 21, 10);
 
-        //Resizing Gray and Thresh images
-        Imgproc.resize(thresh, thresh, new Size(WIDTH, HEIGHT));
-        Imgproc.resize(gray, gray, new Size(WIDTH, HEIGHT));
-
-
-        //Finding the Contours of the thresh image.
-        List<MatOfPoint> contours = new ArrayList<>();
-        Mat hierarchy = new Mat();
-        Imgproc.findContours(thresh, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
-
-        //Sorting the Contours based on Contour area
-        Collections.sort(contours, (o1, o2) -> (int) (Imgproc.contourArea(o2) - Imgproc.contourArea(o1)));
-
-        //Taking only largest 20 contours
-        contours = getTopContours(contours);
-
-        //Applying contours to temp image
-        Mat cnt_img = img.clone();
-
-        //Traversing the Contours for Sudoku Detection
-        for (MatOfPoint cnt : contours) {
+        //Getting contours!
+        List<MatOfPoint> contours;
+        try {
+            contours = getContours(thresh);
+        } catch (Exception e) {
+            return null;
+        }
+        if (contours.size() != 0) {
+            //Traversing the Contours for Sudoku Detection
+            MatOfPoint cnt = contours.get(0);
             MatOfPoint2f c2f = new MatOfPoint2f(cnt.toArray());
             double peri = Imgproc.arcLength(c2f, true);
             MatOfPoint2f approx = new MatOfPoint2f();
@@ -92,126 +92,93 @@ public class SudokuDNS {
             Point[] points = approx.toArray();
 
             if (points.length == 4) {
-                List<MatOfPoint> temp = new ArrayList<>();
-                temp.add(cnt);
-                Imgproc.drawContours(cnt_img, temp, -1, new Scalar(255, 0, 0, 255),
-                        10, Imgproc.LINE_8);
-
-                //Sorting 4 corners
                 Point[] sortedPoints = getSortedPoints(cnt);
-
-                //Getting the Warped Perspective Image.
-                Mat warp_thresh_img = warpPerspective(thresh.clone(), sortedPoints);
-                Mat warp_img = warpPerspective(blur.clone(), sortedPoints);
-
-                //Getting vertical and horizontal Lines.
-                Mat vhLines = getVHLines(warp_thresh_img);
-
-                //
-                Imgproc.cvtColor(vhLines, vhLines, Imgproc.COLOR_BGR2GRAY);
-
-                Mat diff = new Mat();
-                Core.subtract(warp_thresh_img, vhLines, diff);
-
-
-                List<Bitmap> listOfSubMats = getListOfSubMats(warp_img);
-                try {
-                    List<Integer> listOfPredictedNumbers = new ArrayList<>();
-                    OldModel model = OldModel.newInstance(context);
-                    for (Bitmap bmp : listOfSubMats) {
-
-                        int predictedNumber;
-                        predictedNumber = classifyImage(model, bmp);
-                        listOfPredictedNumbers.add(predictedNumber);
-
-                        LinearLayout linearLayout1 = new LinearLayout(context);
-                        linearLayout1.setOrientation(LinearLayout.HORIZONTAL);
-
-                        ImageView imageView = new ImageView(context);
-                        imageView.setImageBitmap(bmp);
-                        imageView.setLayoutParams(new LinearLayout.LayoutParams(100, 100));
-                        linearLayout1.addView(imageView);
-
-                        TextView textView = new TextView(context);
-                        textView.setTextSize(22);
-                        textView.setText(String.valueOf(predictedNumber));
-                        linearLayout1.addView(textView);
-
-                        linearLayout.addView(linearLayout1);
-                    }
-                    model.close();
-
-                    List<List<Integer>> predictedNumbers = new ArrayList<>();
-
-                    for (int i = 0; i < 9; i++) {
-                        List<Integer> temp1 = new ArrayList<>();
-                        for (int j = 0; j < 9; j++) {
-                            temp1.add(listOfPredictedNumbers.get(i * 9 + j));
+                if (sortedPoints[0] != null && sortedPoints[1] != null && sortedPoints[2] != null && sortedPoints[3] != null) {
+                    //Getting the Warped Perspective Image.
+                    Mat warp_img = warpPerspective(gray, sortedPoints);
+                    List<Bitmap> listOfSubMats = getListOfSubMats(warp_img);
+                    try {
+                        List<Integer> listOfPredictedNumbers = new ArrayList<>();
+                        OldModel model = OldModel.newInstance(context);
+                        for (Bitmap bmp : listOfSubMats) {
+                            int predictedNumber;
+                            predictedNumber = classifyImage(model, bmp);
+                            listOfPredictedNumbers.add(predictedNumber);
                         }
-                        predictedNumbers.add(temp1);
-                    }
+                        model.close();
 
-                    if (SudokuSolver.solve(predictedNumbers)) {
-                        Toast.makeText(context, "Solved!", Toast.LENGTH_SHORT).show();
+                        List<List<Integer>> predictedNumbers = new ArrayList<>();
 
-                        Mat dst = Mat.zeros(new Size(WIDTH, HEIGHT), CvType.CV_8UC3);
-                        Scalar color;
-                        int W = WIDTH / 9;
-                        int H = HEIGHT / 9;
                         for (int i = 0; i < 9; i++) {
+                            List<Integer> temp1 = new ArrayList<>();
                             for (int j = 0; j < 9; j++) {
-                                if (listOfPredictedNumbers.get(i * 9 + j) == 0) {
-                                    color = new Scalar(0, 255, 0, 255);
-                                } else {
-                                    color = new Scalar(255, 255, 255, 255);
-                                }
-                                Imgproc.putText(dst, predictedNumbers.get(i).get(j).toString(), new Point(j * W + W / 2.f - W / 4.f ,(i + 0.7) * H), Imgproc.FONT_HERSHEY_COMPLEX
-                                        , 1.8, color, 2, Imgproc.LINE_AA);
+                                temp1.add(listOfPredictedNumbers.get(i * 9 + j));
                             }
+                            predictedNumbers.add(temp1);
                         }
 
-//                      cv2.putText(img, str(numbers[(j*9)+i]), (i*W+int(W/2)-int((W/4)),
-//                     int((j+0.7)*H)), cv2.FONT_HERSHEY_COMPLEX, 2, color, 2, cv2.LINE_AA)
-                        return matToBitmap(dst);
-                    } else {
-                        Toast.makeText(context, "Error!", Toast.LENGTH_SHORT).show();
+                        if (SudokuSolver.solve(predictedNumbers)) {
+                            Mat dst = getSolvedSudokuTextImg(context, listOfPredictedNumbers, predictedNumbers);
+                            return matToBitmap(dst);
+                        }
+                    } catch (IOException e) {
+                        return null;
                     }
-                    Log.d("MYAPP", predictedNumbers.toString());
-                } catch (IOException e) {
-                    // TODO Handle the exception
                 }
-
-                return matToBitmap(warp_img);
             }
         }
-        return matToBitmap(cnt_img);
+        return null;
     }
 
-    private static Mat getVHLines(Mat mat) {
+    @NonNull
+    private static List<MatOfPoint> getContours(Mat thresh) {
+        //Finding the Contours of the thresh image.
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
-        Imgproc.findContours(mat, contours, hierarchy, Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_NONE);
+        Imgproc.findContours(thresh, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
 
-        int cropFactor = 10;
-        int factor = 60;
-        int lineWidth = 13;
-        Mat cnt_img = Mat.zeros(mat.rows(), mat.cols(), CvType.CV_8UC3);
-        for (MatOfPoint c :
-                contours) {
-            Rect rect = Imgproc.boundingRect(c);
-            if (Math.abs(rect.height - rect.width) < cropFactor
-                    && rect.height >= factor && rect.width >= factor
-                    && rect.height < HEIGHT / 3 && rect.width < WIDTH / 3) {
 
-                List<MatOfPoint> temp = new ArrayList<>();
-                temp.add(c);
-                Imgproc.drawContours(cnt_img, temp, -1, new Scalar(255, 255, 255, 255),
-                        lineWidth, Imgproc.LINE_8);
+        //Sorting the Contours based on Contour area
+        Collections.sort(contours, (o1, o2) -> {
+            if (Imgproc.contourArea(o1) >= Imgproc.contourArea(o2)) {
+                return -1;
+            } else if (Imgproc.contourArea(o1) == Imgproc.contourArea(o2)) {
+                return 0;
+            } else {
+                return 1;
+            }
+        });
+
+        //Taking only largest 20 contours
+        contours = getTopContours(contours);
+        return contours;
+    }
+
+    @NonNull
+    private static Mat getSolvedSudokuTextImg(Context context, List<Integer> listOfPredictedNumbers, List<List<Integer>> predictedNumbers) {
+        Bitmap sudoku_grid_bm = BitmapFactory.decodeResource(context.getResources(), R.drawable.sudoku_grid);
+        Mat dst = bitmapToMat(sudoku_grid_bm);
+        Imgproc.resize(dst, dst, new Size(WIDTH, HEIGHT));
+
+        float fontScale = 1.6f;
+        float shiftFactor = 10 * fontScale;
+        Scalar color;
+        int W = WIDTH / 9;
+        int H = HEIGHT / 9;
+        for (int i = 0; i < 9; i++) {
+            for (int j = 0; j < 9; j++) {
+                if (listOfPredictedNumbers.get(i * 9 + j) == 0) {
+                    color = new Scalar(0, 207, 34, 255);
+                } else {
+                    color = new Scalar(0, 0, 0, 255);
+                }
+                Imgproc.putText(dst, predictedNumbers.get(i).get(j).toString(),
+                        new Point(j * W + W / 2.f - shiftFactor, i * H + H / 2.f + shiftFactor),
+                        Imgproc.FONT_HERSHEY_COMPLEX
+                        , fontScale, color, 2, Imgproc.LINE_AA);
             }
         }
-        int border = 10;
-        Imgproc.rectangle(cnt_img, new Point(1, 1), new Point(cnt_img.width(), cnt_img.height()), new Scalar(255, 255, 255, 255), border);
-        return cnt_img;
+        return dst;
     }
 
     private static int classifyImage(OldModel model, Bitmap bmp) {
@@ -293,7 +260,7 @@ public class SudokuDNS {
         for (int i = 0; i < 4; i++) {
             double data_x = points[i].x;
             double data_y = points[i].y;
-            if (data_x < x && data_y < y) {
+            if (data_x <= x && data_y <= y) {
                 sortedPoints[0] = new Point(data_x, data_y);
             } else if (data_x > x && data_y < y) {
                 sortedPoints[1] = new Point(data_x, data_y);
@@ -330,7 +297,7 @@ public class SudokuDNS {
     @NonNull
     private static List<MatOfPoint> getTopContours(List<MatOfPoint> contours) {
         List<MatOfPoint> temp = new ArrayList<>();
-        for (int i = 0; i < Math.min(SudokuDNS.CONTOUR_SIZE, contours.size()); i++) {
+        for (int i = 0; i < Math.min(CONTOUR_SIZE, contours.size()); i++) {
             temp.add(contours.get(i));
         }
         contours = temp;
